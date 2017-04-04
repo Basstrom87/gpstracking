@@ -37,6 +37,8 @@ HardwareSerial & gpsSerial = Serial1;
 const int mcpAddress  = 0; //MCP23017 Address, see table below to select correct address
 const int riderChange = 1; //Corresponds to pin 21 on the MCP23017
 const int waterPit    = 2; //Corresponds to pin 22 on the MCP23017
+const int notifyLED   = 3; //Corresponds to pin 23 on the MCP23017
+
 const int nodeID      = 101; //GPS Unit ID Number, use this number in the program
 
 float bikeLat;
@@ -51,6 +53,8 @@ float battVoltage;
 int gpsLock;
 int headlightStatus;
 int bikeStatus;
+int msgAck;
+int loopCount;
 
 //16x2 I2C LCD Parameters
 LiquidCrystal_I2C lcd(0x3F, 2, 1, 0, 4, 5, 6, 7, 3, POSITIVE);
@@ -70,15 +74,20 @@ LiquidCrystal_I2C lcd(0x3F, 2, 1, 0, 4, 5, 6, 7, 3, POSITIVE);
 Adafruit_MCP23017 mcpDisplayBoard;
 
 //xBee Settings
-XBee               xbee;
-uint8_t            xbeeTxPayload[ 18 ];
-XBeeAddress64      addr64( 0x0013a200, 0x414E4D46 );
-ZBTxRequest        zbTx( addr64, xbeeTxPayload, sizeof(xbeeTxPayload) );
-ZBTxStatusResponse txStatus;
-XBeeResponse       response;
-ZBRxResponse rx = ZBRxResponse();
-ModemStatusResponse msr = ModemStatusResponse();
-uint8_t            xbeeRxPayload[ 2 ];
+XBee                xbee;
+uint8_t             xbeeTxPayload[ 19 ];
+XBeeAddress64       addr64( 0x0013a200, 0x414E4D46 );
+ZBTxRequest         zbTx( addr64, xbeeTxPayload, sizeof(xbeeTxPayload) );
+ZBTxStatusResponse  txStatus;
+XBeeResponse        response;
+ZBRxResponse        rx;
+ModemStatusResponse msr;
+uint8_t             xbeeRxPayload[ 17 ];
+
+union{
+  char rxString[];
+  byte a[16];
+} rxData;
 
 // GPS Programming and Setup
 const char UBLOXGPS_PROG[] PROGMEM = {
@@ -269,6 +278,7 @@ void mcpSetup() {
   mcpDisplayBoard.pullUp(riderChange, HIGH);
   mcpDisplayBoard.pinMode(waterPit, INPUT);
   mcpDisplayBoard.pullUp(waterPit, HIGH);
+  mcpDisplayBoard.pinMode(notifyLED, OUTPUT);
 }
 
 void loop() {
@@ -294,11 +304,34 @@ void xBeeTx() {
   memcpy( &xbeeTxPayload[ 9], &bikeSpeed  , sizeof(bikeSpeed)   );
   memcpy( &xbeeTxPayload[13], &battVoltTmp, sizeof(battVoltTmp) );
   xbeeTxPayload[17] = bikeStatus;
+  xbeeTxPayload[18] = msgAck;
   xbee.send(zbTx);
+  msgAck = 0;
 }
 
+//The following function reads the incoming packet and if the length of the packet is 17 bytes then processes it
+//memcpy is memory copy and its structure is destination array, source array, size of the source array.
+//It will also print the string recieved by the xbee to the screen, maximum of 16 characters.
 void xBeeRx() {
-
+  xbee.readPacket();
+  if (loopCount == 600){
+     mcpDisplayBoard.digitalWrite(notifyLED, LOW);
+     loopCount = 0;
+  }
+  if (xbee.getResponse().isAvailable()) {
+    if (rx.getDataLength() == 17) {
+      memcpy ( &xbeeRxPayload[0], rx.getData(),       sizeof(rx.getData())        );
+      memcpy ( &rxData.a[0],      &xbeeRxPayload[1],  sizeof(&xbeeRxPayload - 1)  );
+      int ID = rx.getData()[0];
+      if (ID == nodeID) {
+        mcpDisplayBoard.digitalWrite(notifyLED, HIGH);
+        lcd.setCursor(0, 0);
+        lcd.print(rxData.rxString);
+        msgAck = 1;
+      }
+    }
+  }
+  loopCount++;
 }
 
 void checkSwitches() {
